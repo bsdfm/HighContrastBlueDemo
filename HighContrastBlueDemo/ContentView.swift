@@ -35,38 +35,46 @@ struct ContentView: View {
         )
     }
 
+    private var blues: [(String, Color)] {
+        [
+            ("accentColor", .accentColor),
+            (".systemBlue", Color(.systemBlue)),
+            ("resolved\n(inherit)", manuallyResolved),
+            ("resolved\n(hardcoded)", hardcodedResolved),
+            ("Color.blue", .blue),
+        ]
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 info
 
-                Group {
-                    swatch(
-                        "Color.accentColor",
-                        color: .accentColor
-                    )
-                    swatch(
-                        "Color(.systemBlue)",
-                        color: Color(.systemBlue)
-                    )
-                    swatch(
-                        "resolved (inherit traits,\nforce .light)",
-                        color: manuallyResolved
-                    )
-                    swatch(
-                        "resolved (hardcoded\n.light + .high)",
-                        color: hardcodedResolved
-                    )
-                    swatch(
-                        "Color.blue",
-                        color: .blue
-                    )
+                ForEach(blues, id: \.0) { label, color in
+                    swatch(label, color: color)
                 }
 
                 Spacer()
             }
             .padding()
             .navigationTitle("Accent Blue Issue")
+            .toolbar {
+                ToolbarItem(placement: .bottomBar) {
+                    glassToolbar
+                }
+            }
+        }
+    }
+
+    private var glassToolbar: some View {
+        HStack(spacing: 12) {
+            ForEach(blues, id: \.0) { _, color in
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.body)
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .background(color, in: .capsule)
+            }
         }
     }
 
