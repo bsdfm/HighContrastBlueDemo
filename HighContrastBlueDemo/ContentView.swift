@@ -1,115 +1,165 @@
 import SwiftUI
 
-// Minimal reproduction: In Dark Mode + "Increase Contrast",
-// `Color.accentColor` on a filled background becomes a lighter
-// blue that's harder to read. Attempting to resolve
-// `UIColor.systemBlue` with light-mode traits via
-// `resolvedColor(with:)` does not match what the system
-// actually renders in Light Mode + Increase Contrast.
+// MARK: - Reproduction
 
-struct ContentView: View {
+//
+// Minimum repro of the "Increase Contrast applied more than once
+// to Color.accentColor" issue observed in a SwiftUI app with this
+// shape: TabView → Tab → NavigationStack → content.
+//
+// Render the SAME `Color.accentColor` (and `Color(uiColor: .systemBlue)`
+// and a literal sRGB reference) three times, in three contexts:
+//
+//   • Group 1 — OVERLAY on the TabView (outside any NavigationStack)
+//   • Group 2 — inside a NavigationStack's content, plus its toolbar
+//   • Group 3 — inside a presented sheet (no NavigationStack wrap)
+//
+// Expected behavior: with Increase Contrast OFF, every swatch in
+// every group is exactly the same color. With Increase Contrast ON,
+// the accent still ought to render the same in all three groups.
+//
+// Observed behavior: with Increase Contrast ON,
+//   • Group 1 is shifted once (the normal, expected HC adjustment)
+//   • Group 2 is shifted MORE — darker in light mode, lighter in
+//     dark mode — as if the adjustment is applied twice
+//   • Group 3 sits between Group 1 and Group 2
+//
+// The literal sRGB swatch is the control: it doesn't participate in
+// the accent pipeline at all, so it should be identical in all three
+// contexts (no HC adjustment) and serve as a reference line.
+
+struct RootView: View {
+    @State private var showSheet = false
+
+    var body: some View {
+        TabView {
+            Tab("Nav Stack", systemImage: "list.bullet") {
+                NavigationStack {
+                    InNavStackView(showSheet: $showSheet)
+                }
+            }
+            Tab("Other", systemImage: "circle") {
+                Text("Other tab — unused")
+            }
+        }
+        // Group 1 — OUTSIDE any NavigationStack, sibling of TabView
+        .overlay(alignment: .top) {
+            ProbeRow(label: "GROUP 1 · OVERLAY")
+                .padding(.top, 60)
+                .padding(.horizontal, 12)
+                .allowsHitTesting(false)
+        }
+        .sheet(isPresented: $showSheet) {
+            InSheetView()
+        }
+    }
+}
+
+// MARK: - Group 2 — inside NavigationStack
+
+private struct InNavStackView: View {
+    @Binding var showSheet: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
-    /// Resolve systemBlue against current traits but force
-    /// light mode — inherits real gamut, level, etc.
-    @MainActor private var manuallyResolved: Color {
-        let base = UITraitCollection.current
-        let light = base.modifyingTraits { mutable in
-            mutable.userInterfaceStyle = .light
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Scheme: \(String(describing: colorScheme))")
+                .font(.caption.monospaced())
+            Text("Contrast: \(String(describing: contrast))")
+                .font(.caption.monospaced())
+
+            ProbeRow(label: "GROUP 2 · IN NAV STACK")
+
+            Button("Present sheet → Group 3") {
+                showSheet = true
+            }
+            .buttonStyle(.borderedProminent)
+
+            Spacer()
         }
-        return Color(
-            UIColor.systemBlue.resolvedColor(with: light)
-        )
+        .padding()
+        .navigationTitle("Accent Repro")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                // Toolbar item — also Group 2; should pick up the
+                // same shift as in-NavStack content
+                Image(systemName: "star.fill")
+                    .accessibilityLabel("Toolbar star")
+            }
+        }
     }
+}
 
-    /// Hardcoded traits (no inherited gamut/level).
-    @MainActor private var hardcodedResolved: Color {
-        Color(
-            UIColor.systemBlue.resolvedColor(
-                with: UITraitCollection { traits in
-                    traits.userInterfaceStyle = .light
-                    traits.accessibilityContrast = .high
-                }
-            )
-        )
-    }
+// MARK: - Group 3 — inside a sheet
 
-    private var blues: [(String, Color)] {
-        [
-            ("accentColor", .accentColor),
-            (".systemBlue", Color(.systemBlue)),
-            ("resolved\n(inherit)", manuallyResolved),
-            ("resolved\n(hardcoded)", hardcodedResolved),
-            ("Color.blue", .blue),
-        ]
-    }
+private struct InSheetView: View {
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                info
+        VStack(spacing: 20) {
+            ProbeRow(label: "GROUP 3 · IN SHEET")
 
-                ForEach(blues, id: \.0) { label, color in
-                    swatch(label, color: color)
-                }
-
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Accent Blue Issue")
-            .toolbar {
-                ToolbarItem(placement: .bottomBar) {
-                    glassToolbar
-                }
-            }
+            Button("Dismiss") { dismiss() }
+                .buttonStyle(.bordered)
         }
+        .padding()
     }
+}
 
-    private var glassToolbar: some View {
-        HStack(spacing: 12) {
-            ForEach(blues, id: \.0) { _, color in
-                Image(systemName: "line.3.horizontal.decrease")
-                    .font(.body)
-                    .foregroundStyle(.white)
-                    .padding(10)
-                    .background(color, in: .capsule)
+// MARK: - Probe row
+
+/// Three swatches rendered via different accent-resolution paths.
+/// Same row is used in each group so the three groups are directly
+/// comparable.
+private struct ProbeRow: View {
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption2.bold().monospaced())
+
+            HStack(spacing: 0) {
+                swatch(
+                    "ACCENT",
+                    fill: AnyShapeStyle(Color.accentColor)
+                )
+                swatch(
+                    "UIKIT",
+                    fill: AnyShapeStyle(Color(uiColor: .systemBlue))
+                )
+                swatch(
+                    "sRGB",
+                    fill: AnyShapeStyle(
+                        Color(
+                            .sRGB,
+                            red: 0 / 255,
+                            green: 136 / 255,
+                            blue: 255 / 255,
+                            opacity: 1
+                        )
+                    )
+                )
             }
+            .frame(height: 70)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-    }
-
-    private var info: some View {
-        VStack(spacing: 4) {
-            Text("Scheme: \(String(describing: colorScheme))")
-            Text("Contrast: \(String(describing: contrast))")
-        }
-        .font(.caption.monospaced())
-        .foregroundStyle(.secondary)
     }
 
     private func swatch(
         _ label: String,
-        color: Color
+        fill: AnyShapeStyle
     ) -> some View {
-        HStack {
+        ZStack {
+            Rectangle().fill(fill)
             Text(label)
-                .font(.caption.monospaced())
-                .frame(
-                    maxWidth: .infinity,
-                    alignment: .leading
-                )
-            Text("Selected")
-                .font(.subheadline.bold())
+                .font(.caption.bold())
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(
-                    color, in: .rect(cornerRadius: 8)
-                )
         }
     }
 }
 
 #Preview {
-    ContentView()
+    RootView()
 }
